@@ -13,6 +13,7 @@
     .photos{display:grid;gap:10px;margin-top:12px}.photo{border:1px solid #e1e9e3;border-radius:12px;padding:12px}.photo-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.photo-name{overflow-wrap:anywhere;font-weight:600}.photo details{margin-top:8px}.photo pre{white-space:pre-wrap;word-break:break-word;background:#f6f8f6;padding:10px;max-height:220px;overflow:auto;border-radius:8px;font-size:.84rem}
     .table-wrap{overflow-x:auto;margin-top:12px}table{border-collapse:collapse;min-width:880px;width:100%}th,td{padding:8px;border-bottom:1px solid #e1eae4;text-align:left;vertical-align:middle}th{font-size:.86rem;color:#465f50;background:#f7faf8}td input:not([type=checkbox]),td select{width:100%;min-width:75px;border:1px solid #bacdc1;border-radius:8px;padding:9px;font:inherit;background:#fff}td input[name=code]{min-width:135px}td input[name=name]{min-width:180px}td input[name=filename]{min-width:120px}td input[name=qty]{min-width:75px}td input[name=unit]{min-width:65px}td button{padding:7px 10px;min-height:38px}tr.invalid{background:#fff2ec}tr.review{background:#fffbed}.empty{padding:14px;color:#587063;background:#f7faf8;border-radius:10px}
     #summary{margin-top:12px}.foot{font-size:.86rem;color:#52695b;margin-top:18px}label.check{display:inline-flex;gap:7px;align-items:center;font-size:.9rem}.count{font-size:.9rem;color:#476053}
+    .pill-count{font-size:2rem;font-weight:750;color:#176c52;margin:10px 0}.pill-preview{display:block;max-width:100%;height:auto;border-radius:10px;border:1px solid #c7d7cc;touch-action:manipulation;cursor:crosshair;margin-top:12px}.pill-preview[hidden]{display:none}.pill-settings{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:12px 0}.pill-settings label{display:flex;align-items:center;gap:8px}.pill-settings input[type=range]{width:140px}.pill-settings input[type=text]{font:inherit;padding:8px;border:1px solid #bacdc1;border-radius:8px;max-width:160px}
     @media(max-width:600px){.card{padding:15px}h1{font-size:1.25rem}.button,button{flex:1}.photo-head button{flex:0 0 auto}.actions{align-items:stretch}.table-wrap{margin-left:-15px;margin-right:-15px}.table-wrap table{margin:0 15px}}
   </style>
 </head>
@@ -45,6 +46,29 @@
     <div class="actions"><button id="detailBtn" type="button" disabled>下載辨識明細 CSV</button><button id="summaryBtn" class="secondary" type="button" disabled>下載藥品加總 CSV</button></div>
     <p id="summary" class="hint"></p>
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
+  </section>
+  <section class="card" id="pill-counter">
+    <h2>4. 拍照數藥錠</h2>
+    <p class="hint">把藥錠分開平放在單色、對比明顯的背景上，四周留空再從正上方拍照。此功能適合分離的藥錠；相接、重疊、透明或與背景同色時可能算錯。</p>
+    <div class="actions">
+      <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
+      <label class="button secondary" for="pillGallery">選擇藥錠照片</label><input class="hidden-input" id="pillGallery" type="file" accept="image/*">
+    </div>
+    <div class="pill-settings">
+      <label>背景差異 <input id="pillThreshold" type="range" min="20" max="160" value="58"><output id="pillThresholdValue">58</output></label>
+      <label>最小面積 <input id="pillMinArea" type="range" min="25" max="2000" step="25" value="150"><output id="pillMinAreaValue">150</output></label>
+    </div>
+    <p class="hint">照片載入後會自動標記估計位置。調整滑桿可重新計算；點綠色標記可刪除，點漏掉的藥錠可補上一顆。</p>
+    <p id="pillMessage" role="status" aria-live="polite">尚未選擇藥錠照片。</p>
+    <canvas class="pill-preview" id="pillPreview" hidden aria-label="藥錠照片與計數標記"></canvas>
+    <p class="pill-count" id="pillCount">— 顆</p>
+    <div class="actions">
+      <button class="secondary" id="pillReset" type="button" disabled>重新自動計算</button>
+      <button class="light" id="pillUndo" type="button" disabled>復原上一步</button>
+      <button id="pillCsv" type="button" disabled>下載數藥記錄 CSV</button>
+    </div>
+    <div class="pill-settings"><label>藥品備註 <input id="pillNote" type="text" maxlength="80" placeholder="可留空，勿填病人資料"></label></div>
+    <p class="notice">數藥結果僅供整理參考，請逐顆核對標記及實物；這裡的數量不會自動加入處方藥品加總。</p>
   </section>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
@@ -214,6 +238,70 @@
   $('camera').onchange=e=>processFiles(e.target.files);
   $('gallery').onchange=e=>processFiles(e.target.files);
   $('clear').onclick=async()=>{if(busy)return;if(data.length && !confirm('清除所有照片與明細？尚未下載的修改會消失。'))return;data.length=0;photos.length=0;$('photos').replaceChildren();render();setProgress(0);setMessage('已清除。');if(worker){await worker.terminate();worker=null;}};
+  let pillSource=null, pillFilename='', pillMarkers=[], pillHistory=[];
+  const pillStatus=s=>{$('pillMessage').textContent=s;};
+  function median(values){values.sort((a,b)=>a-b);return values[Math.floor(values.length/2)]||0;}
+  function findPills(image, width, height, threshold, minArea){
+    const red=[],green=[],blue=[],stride=Math.max(2,Math.floor(Math.min(width,height)/100));
+    const border=Math.max(2,Math.floor(Math.min(width,height)*.025));
+    for(let y=border;y<height-border;y+=stride)for(const x of [border,width-border-1]){const i=(y*width+x)*4;red.push(image[i]);green.push(image[i+1]);blue.push(image[i+2]);}
+    for(let x=border;x<width-border;x+=stride)for(const y of [border,height-border-1]){const i=(y*width+x)*4;red.push(image[i]);green.push(image[i+1]);blue.push(image[i+2]);}
+    const bg=[median(red),median(green),median(blue)], size=width*height;
+    const mask=new Uint8Array(size), visited=new Uint8Array(size), queue=new Int32Array(size), points=[];
+    for(let p=0;p<size;p++){const i=p*4, dr=image[i]-bg[0], dg=image[i+1]-bg[1], db=image[i+2]-bg[2];if(dr*dr+dg*dg+db*db>threshold*threshold)mask[p]=1;}
+    for(let p=0;p<size;p++){
+      if(!mask[p]||visited[p])continue;
+      let head=0,tail=1,area=0,sumX=0,sumY=0,touchesEdge=false;queue[0]=p;visited[p]=1;
+      while(head<tail){
+        const current=queue[head++],x=current%width,y=(current/width)|0;area++;sumX+=x;sumY+=y;
+        if(x===0||y===0||x===width-1||y===height-1)touchesEdge=true;
+        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+          if(!dx&&!dy)continue;const nx=x+dx,ny=y+dy;if(nx<0||nx>=width||ny<0||ny>=height)continue;
+          const q=ny*width+nx;if(mask[q]&&!visited[q]){visited[q]=1;queue[tail++]=q;}
+        }
+      }
+      if(!touchesEdge&&area>=minArea&&area<size*.35)points.push({x:sumX/area,y:sumY/area});
+    }
+    return points;
+  }
+  function drawPills(){
+    if(!pillSource)return;const canvas=$('pillPreview'),ctx=canvas.getContext('2d');
+    canvas.width=pillSource.width;canvas.height=pillSource.height;ctx.drawImage(pillSource,0,0);
+    const radius=Math.max(13,Math.round(canvas.width*.019));ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=`bold ${Math.round(radius*.92)}px system-ui`;
+    pillMarkers.forEach((point,i)=>{ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fillStyle='#176c52';ctx.fill();ctx.lineWidth=3;ctx.strokeStyle='white';ctx.stroke();ctx.fillStyle='white';ctx.fillText(String(i+1),point.x,point.y);});
+    $('pillCount').textContent=`${pillMarkers.length} 顆`;$('pillCsv').disabled=false;$('pillReset').disabled=false;$('pillUndo').disabled=pillHistory.length===0;canvas.hidden=false;
+  }
+  function analyzePills(){
+    if(!pillSource)return;const {width,height}=pillSource,ctx=pillSource.getContext('2d',{willReadFrequently:true});
+    pillMarkers=findPills(ctx.getImageData(0,0,width,height).data,width,height,Number($('pillThreshold').value),Number($('pillMinArea').value));
+    pillHistory=[];drawPills();pillStatus(`自動估計 ${pillMarkers.length} 顆。請逐顆檢查標記，可點照片修正。`);
+  }
+  function loadPillPhoto(file){return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(file),img=new Image();
+    img.onload=()=>{try{const scale=Math.min(1,960/Math.max(img.width,img.height));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);URL.revokeObjectURL(url);resolve(canvas);}catch(err){URL.revokeObjectURL(url);reject(err);}};
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(Error('無法讀取照片，請改用 JPG 或 PNG。'));};img.src=url;
+  });}
+  async function selectPillPhoto(file){
+    if(!file)return;pillStatus('正在讀取照片…');
+    try{if(file.size>25*1024*1024)throw Error('照片超過 25 MB，請縮小後再試。');pillSource=await loadPillPhoto(file);pillFilename=file.name;analyzePills();}
+    catch(err){pillStatus(String(err.message||err));}
+    $('pillCamera').value='';$('pillGallery').value='';
+  }
+  $('pillCamera').onchange=e=>selectPillPhoto(e.target.files[0]);
+  $('pillGallery').onchange=e=>selectPillPhoto(e.target.files[0]);
+  for(const [slider,output] of [['pillThreshold','pillThresholdValue'],['pillMinArea','pillMinAreaValue']]){
+    $(slider).addEventListener('input',()=>{$(output).textContent=$(slider).value;});
+    $(slider).addEventListener('change',analyzePills);
+  }
+  $('pillReset').onclick=analyzePills;
+  $('pillPreview').addEventListener('click',e=>{
+    if(!pillSource)return;const canvas=$('pillPreview'),rect=canvas.getBoundingClientRect();
+    const x=(e.clientX-rect.left)*canvas.width/rect.width,y=(e.clientY-rect.top)*canvas.height/rect.height;
+    const radius=Math.max(18,canvas.width*.025),index=pillMarkers.findIndex(p=>(p.x-x)**2+(p.y-y)**2<radius**2);
+    pillHistory.push(pillMarkers.map(p=>({...p})));if(index>=0)pillMarkers.splice(index,1);else pillMarkers.push({x,y});drawPills();pillStatus(`手動修正為 ${pillMarkers.length} 顆。請對照實物核對。`);
+  });
+  $('pillUndo').onclick=()=>{if(!pillHistory.length)return;pillMarkers=pillHistory.pop();drawPills();pillStatus(`已復原，目前 ${pillMarkers.length} 顆。`);};
+  $('pillCsv').onclick=()=>{if(!pillSource)return;downloadCSV(`數藥記錄_${stamp()}.csv`,['檔名','藥品備註','顆數','時間','狀態'],[{'檔名':pillFilename,'藥品備註':$('pillNote').value.trim(),'顆數':pillMarkers.length,'時間':new Date().toLocaleString('zh-TW'),'狀態':'待人工核對'}]);};
   render();
 })();
 </script>
