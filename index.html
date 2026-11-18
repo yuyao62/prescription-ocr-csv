@@ -49,13 +49,13 @@
   </section>
   <section class="card" id="pill-counter">
     <h2>4. 拍照數藥錠</h2>
-    <p class="hint">彩色膠囊放金屬藥盤時選「彩色膠囊／金屬藥盤」；白色藥錠請選「單色背景／白色藥錠」。把藥錠分開平放，四周留空再從正上方拍照。此功能適合分離的藥錠；相接、重疊、透明或與背景同色時可能算錯。</p>
+    <p class="hint">預設自動檢查彩色區域與局部明暗輪廓，適用不同顏色的候選藥錠。把藥錠分開平放，四周留空再從正上方拍照。此功能適合分離的藥錠；相接、重疊、透明或與背景同色時可能算錯。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
       <label class="button secondary" for="pillGallery">選擇藥錠照片</label><input class="hidden-input" id="pillGallery" type="file" accept="image/*">
     </div>
     <div class="pill-settings">
-      <label>辨識模式 <select id="pillMode"><option value="color">彩色膠囊／金屬藥盤</option><option value="background">單色背景／白色藥錠</option></select></label>
+      <label>辨識模式 <select id="pillMode"><option value="auto">自動辨識（各種顏色）</option><option value="color">彩色膠囊／金屬藥盤</option><option value="background">單色背景／白色藥錠</option></select></label>
       <label>背景差異 <input id="pillThreshold" type="range" min="20" max="160" value="58"><output id="pillThresholdValue">58</output></label>
       <label>最小面積 <input id="pillMinArea" type="range" min="25" max="2000" step="25" value="150"><output id="pillMinAreaValue">150</output></label>
     </div>
@@ -248,7 +248,8 @@
     for(let y=border;y<height-border;y+=stride)for(const x of [border,width-border-1]){const i=(y*width+x)*4;red.push(image[i]);green.push(image[i+1]);blue.push(image[i+2]);}
     for(let x=border;x<width-border;x+=stride)for(const y of [border,height-border-1]){const i=(y*width+x)*4;red.push(image[i]);green.push(image[i+1]);blue.push(image[i+2]);}
     const bg=[median(red),median(green),median(blue)], size=width*height;
-    const colorMode=$('pillMode').value==='color', components=[];
+    const autoMode=$('pillMode').value==='auto';
+    const colorMode=autoMode || $('pillMode').value==='color', components=[];
     const mask=new Uint8Array(size), visited=new Uint8Array(size), queue=new Int32Array(size), points=[];
     for(let p=0;p<size;p++){const i=p*4, dr=image[i]-bg[0], dg=image[i+1]-bg[1], db=image[i+2]-bg[2];const hi=Math.max(image[i],image[i+1],image[i+2]),lo=Math.min(image[i],image[i+1],image[i+2]);if(colorMode ? (hi>45 && hi-lo>38 && (hi-lo)/Math.max(hi,1)>.32) : dr*dr+dg*dg+db*db>threshold*threshold)mask[p]=1;}
     for(let p=0;p<size;p++){
@@ -290,6 +291,43 @@
         points.push(...centers);
       }
     }
+
+    if(autoMode){
+      const stride=width+1, integral=new Float64Array((width+1)*(height+1)), gray=new Float32Array(size);
+      for(let y=0;y<height;y++){let row=0;for(let x=0;x<width;x++){
+        const p=y*width+x,i=p*4;gray[p]=(image[i]+image[i+1]+image[i+2])/3;row+=gray[p];
+        integral[(y+1)*stride+x+1]=integral[y*stride+x+1]+row;
+      }}
+      const radius=Math.max(15,Math.round(Math.min(width,height)*.05));
+      const bright=new Uint8Array(size), seen=new Uint8Array(size), candidates=[];
+      for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+        const p=y*width+x,i=p*4,x0=Math.max(0,x-radius),x1=Math.min(width,x+radius+1),y0=Math.max(0,y-radius),y1=Math.min(height,y+radius+1);
+        const mean=(integral[y1*stride+x1]-integral[y0*stride+x1]-integral[y1*stride+x0]+integral[y0*stride+x0])/((x1-x0)*(y1-y0));
+        const chroma=Math.max(image[i],image[i+1],image[i+2])-Math.min(image[i],image[i+1],image[i+2]);
+        if(gray[p]>100 && gray[p]-mean>20 && chroma<65)bright[p]=1;
+      }
+      for(let start=0;start<size;start++){
+        if(!bright[start]||seen[start])continue;
+        let head=0,tail=1,sx=0,sy=0,sxx=0,syy=0,sxy=0,minX=width,maxX=0,minY=height,maxY=0;queue[0]=start;seen[start]=1;
+        while(head<tail){
+          const p=queue[head++],x=p%width,y=Math.floor(p/width);sx+=x;sy+=y;sxx+=x*x;syy+=y*y;sxy+=x*y;
+          minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+          for(const [dx,dy] of [[-1,0],[1,0],[0,-1],[0,1]]){
+            const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=width||ny>=height)continue;
+            const q=ny*width+nx;if(bright[q]&&!seen[q]){seen[q]=1;queue[tail++]=q;}
+          }
+        }
+        const w=maxX-minX+1,h=maxY-minY+1;
+        const vx=sxx/tail-(sx/tail)**2,vy=syy/tail-(sy/tail)**2,cov=sxy/tail-sx*sy/(tail*tail),disc=Math.sqrt((vx-vy)**2+4*cov*cov),roundness=(vx+vy-disc)/Math.max(.001,vx+vy+disc);
+        if(roundness>.45 && tail>=Math.max(80,minArea*.25) && tail<size*.015 && w/h>.6 && w/h<1.6 && tail/(w*h)>.4 && minX>0 && minY>0 && maxX<width-1 && maxY<height-1)
+          candidates.push({x:sx/tail,y:sy/tail,area:tail,radius:Math.max(w,h)*.5});
+      }
+      const typical=median(candidates.map(p=>p.area));
+      for(const c of candidates){
+        if(c.area<typical*.5)continue;
+        if(!points.some(p=>(p.x-c.x)**2+(p.y-c.y)**2<(c.radius*1.2)**2))points.push({x:c.x,y:c.y});
+      }
+    }
     return points;
   }
   function drawPills(){
@@ -302,7 +340,7 @@
   function analyzePills(){
     if(!pillSource)return;const {width,height}=pillSource,ctx=pillSource.getContext('2d',{willReadFrequently:true});
     pillMarkers=findPills(ctx.getImageData(0,0,width,height).data,width,height,Number($('pillThreshold').value),Number($('pillMinArea').value));
-    pillHistory=[];drawPills();pillStatus(`自動估計 ${pillMarkers.length} 顆（含相接區域的面積推估）。請逐顆核對；不同大小的膠囊請分開拍攝。`);
+    pillHistory=[];drawPills();pillStatus(`自動估計 ${pillMarkers.length} 顆。請核對每個標記；反光、陰影及重疊可能誤判，部分相接區域使用面積推估。`);
   }
   function loadPillPhoto(file){return new Promise((resolve,reject)=>{
     const url=URL.createObjectURL(file),img=new Image();
