@@ -48,7 +48,7 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r5）</h2>
+    <h2>4. 拍照數藥錠（測試版 r6）</h2>
     <p class="hint">預設檢查彩色區域與局部明暗輪廓，並依候選物的形狀調整圓形及長橢圓篩選。結果受照片尺寸影響，仍需人工核對。把藥錠分開平放，四周留空再從正上方拍照。此功能適合分離的藥錠；相接、重疊、透明或與背景同色時可能算錯。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
@@ -59,11 +59,12 @@
       <label>背景差異 <input id="pillThreshold" type="range" min="20" max="160" value="58"><output id="pillThresholdValue">58</output></label>
       <label>最小面積 <input id="pillMinArea" type="range" min="25" max="2000" step="25" value="150"><output id="pillMinAreaValue">150</output></label>
     </div>
-    <p class="hint">照片載入後會自動標記估計位置。調整滑桿可重新計算；點綠色標記可刪除，點漏掉的藥錠可補上一顆。</p>
+    <p class="hint">自動結果不準時，按「圈選一顆校準」，依序點一顆完整藥錠的左上角、右下角（選橫放或直放的一顆，框內勿包含其他藥或陰影）。校準會重新比對同張照片的尺寸、外觀及邊界。完成後仍可點標記刪除、點空白補上一顆。</p>
     <p id="pillMessage" role="status" aria-live="polite">尚未選擇藥錠照片。</p>
     <canvas class="pill-preview" id="pillPreview" hidden aria-label="藥錠照片與計數標記"></canvas>
     <p class="pill-count" id="pillCount">— 顆</p>
     <div class="actions">
+      <button id="pillCalibrate" class="secondary" type="button" disabled>圈選一顆校準</button><button id="pillCancelSample" class="light" type="button" hidden>取消圈選</button>
       <button class="secondary" id="pillReset" type="button" disabled>重新自動計算</button>
       <button class="light" id="pillUndo" type="button" disabled>復原上一步</button>
       <button id="pillCsv" type="button" disabled>下載數藥記錄 CSV</button>
@@ -239,7 +240,7 @@
   $('camera').onchange=e=>processFiles(e.target.files);
   $('gallery').onchange=e=>processFiles(e.target.files);
   $('clear').onclick=async()=>{if(busy)return;if(data.length && !confirm('清除所有照片與明細？尚未下載的修改會消失。'))return;data.length=0;photos.length=0;$('photos').replaceChildren();render();setProgress(0);setMessage('已清除。');if(worker){await worker.terminate();worker=null;}};
-  let pillSource=null, pillFilename='', pillMarkers=[], pillHistory=[];
+  let pillSource=null, pillFilename='', pillMarkers=[], pillHistory=[], sampleMode=false, sampleCorner=null, pillCalibration='自動候選，待人工核對';
   const pillStatus=s=>{$('pillMessage').textContent=s;};
   function median(values){values.sort((a,b)=>a-b);return values[Math.floor(values.length/2)]||0;}
   function findPills(image, width, height, threshold, minArea){
@@ -337,10 +338,10 @@
     canvas.width=pillSource.width;canvas.height=pillSource.height;ctx.drawImage(pillSource,0,0);
     const radius=Math.max(13,Math.round(canvas.width*.019));ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=`bold ${Math.round(radius*.92)}px system-ui`;
     pillMarkers.forEach((point,i)=>{ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fillStyle='#176c52';ctx.fill();ctx.lineWidth=3;ctx.strokeStyle='white';ctx.stroke();ctx.fillStyle='white';ctx.fillText(String(i+1),point.x,point.y);});
-    $('pillCount').textContent=`${pillMarkers.length} 顆`;$('pillCsv').disabled=false;$('pillReset').disabled=false;$('pillUndo').disabled=pillHistory.length===0;canvas.hidden=false;
+    $('pillCount').textContent=`${pillMarkers.length} 顆`;$('pillCsv').disabled=false;$('pillReset').disabled=false;$('pillCalibrate').disabled=false;$('pillUndo').disabled=pillHistory.length===0;canvas.hidden=false;
   }
   function analyzePills(){
-    if(!pillSource)return;const {width,height}=pillSource,ctx=pillSource.getContext('2d',{willReadFrequently:true});
+    if(!pillSource)return;sampleMode=false;sampleCorner=null;$('pillCancelSample').hidden=true;pillCalibration='自動候選，待人工核對';const {width,height}=pillSource,ctx=pillSource.getContext('2d',{willReadFrequently:true});
     pillMarkers=findPills(ctx.getImageData(0,0,width,height).data,width,height,Number($('pillThreshold').value),Number($('pillMinArea').value));
     pillHistory=[];drawPills();pillStatus(`找到 ${pillMarkers.length} 個候選標記，尚未核對。請逐顆對照照片及實物；反光、陰影、相接與重疊可能漏判或誤判。`);
   }
@@ -363,14 +364,76 @@
   }
   $('pillMode').onchange=analyzePills;
   $('pillReset').onclick=analyzePills;
+function detectSampleMatches(a,w,h,major,minor,polarity=1,refX=0,refY=0){
+ const rgbAt=(x,y)=>{let c=[0,0,0];for(let yy=-3;yy<=3;yy++)for(let xx=-3;xx<=3;xx++){const i=((Math.round(y)+yy)*w+Math.round(x)+xx)*4;for(let k=0;k<3;k++)c[k]+=a[i+k]/49;}return c;};
+ const ref=rgbAt(refX,refY),refMean=ref.reduce((x,y)=>x+y)/3;
+ const scores=[],step=3,orientations=major/minor<1.25?1:12;
+ for(let y=Math.ceil(major*.65);y<h-major*.65;y+=step)for(let x=Math.ceil(major*.65);x<w-major*.65;x+=step){
+  const rgb=rgbAt(x,y),mean=rgb.reduce((x,y)=>x+y)/3;const chromaDist=Math.sqrt(rgb.reduce((sum,v,k)=>sum+((v-mean)-(ref[k]-refMean))**2,0));if(chromaDist>35 || Math.abs(mean-refMean)>55)continue;
+  let best=0,bestR=0;
+  for(const scale of [.85,1,1.15])for(let angle=0;angle<orientations;angle++){
+   const theta=angle*Math.PI/orientations,ct=Math.cos(theta),st=Math.sin(theta),v=[];
+   for(let k=0;k<16;k++){
+    const t=k*Math.PI/8,dx=Math.cos(t)*major*.5*scale,dy=Math.sin(t)*minor*.5*scale,rx=dx*ct-dy*st,ry=dx*st+dy*ct;
+    const ix=Math.round(x+rx*.65),iy=Math.round(y+ry*.65),ox=Math.round(x+rx*1.22),oy=Math.round(y+ry*1.22);
+    const ip=(iy*w+ix)*4,op=(oy*w+ox)*4;
+    const d=((a[ip]+a[ip+1]+a[ip+2])-(a[op]+a[op+1]+a[op+2]))/3*polarity;v.push(d);
+   }
+   v.sort((a,b)=>a-b);const score=v[3]*.5+v[7]*.5;
+   if(score>best){best=score;bestR=angle;}
+  }
+  if(best>16)scores.push({x,y,score:best});
+ }
+ scores.sort((a,b)=>b.score-a.score);const points=[];for(const p of scores){if(!points.some(q=>(q.x-p.x)**2+(q.y-p.y)**2<(major*.58)**2))points.push(p);}
+ return points;
+}
+
+
+
+  function cancelSample(){sampleMode=false;sampleCorner=null;$('pillCancelSample').hidden=true;drawPills();}
+  $('pillCancelSample').onclick=()=>{cancelSample();pillStatus('已取消圈選，原標記保留。');};
+  $('pillCalibrate').onclick=()=>{if(!pillSource)return;sampleMode=true;sampleCorner=null;$('pillCancelSample').hidden=false;pillStatus('先點一顆橫放或直放藥錠的左上角，再點右下角，請緊貼藥錠邊緣並排除陰影。');};
+  function sampleClick(x,y){
+    if(!sampleCorner){sampleCorner={x,y};drawPills();const ctx=$('pillPreview').getContext('2d');ctx.strokeStyle='#ffb000';ctx.lineWidth=3;ctx.strokeRect(x-5,y-5,10,10);pillStatus('已選第一個角。請點同一顆藥錠的右下角。');return;}
+    const x0=Math.min(x,sampleCorner.x),x1=Math.max(x,sampleCorner.x),y0=Math.min(y,sampleCorner.y),y1=Math.max(y,sampleCorner.y);
+    const bw=x1-x0,bh=y1-y0;
+    if(Math.min(bw,bh)<8||Math.max(bw,bh)>Math.max(pillSource.width,pillSource.height)*.4){sampleCorner=null;pillStatus('框選範圍太小或太大。請重新框選一顆完整藥錠。');return;}
+    const cx=(x0+x1)/2,cy=(y0+y1)/2;cancelSample();
+    const canvas=$('pillPreview'),ctx=canvas.getContext('2d');ctx.strokeStyle='#ffb000';ctx.lineWidth=3;ctx.strokeRect(x0,y0,bw,bh);
+    $('pillCalibrate').disabled=true;$('pillReset').disabled=true;pillStatus('正在依圈選樣本比對不同方向與大小，請稍候…');
+    setTimeout(()=>{
+      try{
+        const w=pillSource.width,h=pillSource.height,a=pillSource.getContext('2d').getImageData(0,0,w,h).data;
+        const major=Math.max(bw,bh),minor=Math.min(bw,bh);
+        let inside=0,outside=0;
+        for(let k=0;k<16;k++){const t=k*Math.PI/8,ix=Math.round(cx+Math.cos(t)*bw*.18),iy=Math.round(cy+Math.sin(t)*bh*.18),ox=Math.max(0,Math.min(w-1,Math.round(cx+Math.cos(t)*bw*.7))),oy=Math.max(0,Math.min(h-1,Math.round(cy+Math.sin(t)*bh*.7)));
+          const i=(iy*w+ix)*4,o=(oy*w+ox)*4;inside+=(a[i]+a[i+1]+a[i+2])/48;outside+=(a[o]+a[o+1]+a[o+2])/48;
+        }
+        const before=pillMarkers.map(p=>({...p}));let added=0,removed=0;
+        if(inside>=outside){
+          const hits=detectSampleMatches(a,w,h,major,minor,1,cx,cy),best=hits[0]?.score||0;
+          if(best>0){
+            const filtered=before.filter(p=>hits.some(q=>q.score>=best*.25&&(p.x-q.x)**2+(p.y-q.y)**2<(major*.65)**2));
+            for(const q of hits){if(q.score<best*.5)continue;if(!filtered.some(p=>(p.x-q.x)**2+(p.y-q.y)**2<(minor*.8)**2)){filtered.push({x:q.x,y:q.y});added++;}}
+            if(added){removed=before.length-(filtered.length-added);pillMarkers=filtered;}
+          }
+        }
+        pillHistory.push(before);pillCalibration='樣本校準後，待人工核對';drawPills();
+        pillStatus(added ? '校準後 '+pillMarkers.length+' 個候選標記；補入 '+added+' 處、排除 '+removed+' 處。請逐顆核對，必要時用復原恢復。' : '這次樣本未提供更強的新候選，保留原 '+pillMarkers.length+' 個標記，仍需人工核對。');
+      }catch(err){drawPills();pillStatus('校準未完成：'+String(err.message||err)+'。原標記仍保留。');}
+      finally{$('pillCalibrate').disabled=false;$('pillReset').disabled=false;}
+    },30);
+  }
+
   $('pillPreview').addEventListener('click',e=>{
     if(!pillSource)return;const canvas=$('pillPreview'),rect=canvas.getBoundingClientRect();
     const x=(e.clientX-rect.left)*canvas.width/rect.width,y=(e.clientY-rect.top)*canvas.height/rect.height;
+    if(sampleMode){sampleClick(x,y);return;}
     const radius=Math.max(18,canvas.width*.025),index=pillMarkers.findIndex(p=>(p.x-x)**2+(p.y-y)**2<radius**2);
     pillHistory.push(pillMarkers.map(p=>({...p})));if(index>=0)pillMarkers.splice(index,1);else pillMarkers.push({x,y});drawPills();pillStatus(`手動修正為 ${pillMarkers.length} 顆。請對照實物核對。`);
   });
   $('pillUndo').onclick=()=>{if(!pillHistory.length)return;pillMarkers=pillHistory.pop();drawPills();pillStatus(`已復原，目前 ${pillMarkers.length} 顆。`);};
-  $('pillCsv').onclick=()=>{if(!pillSource)return;downloadCSV(`數藥記錄_${stamp()}.csv`,['檔名','藥品備註','顆數','時間','狀態'],[{'檔名':pillFilename,'藥品備註':$('pillNote').value.trim(),'顆數':pillMarkers.length,'時間':new Date().toLocaleString('zh-TW'),'狀態':'待人工核對'}]);};
+  $('pillCsv').onclick=()=>{if(!pillSource)return;downloadCSV(`數藥記錄_${stamp()}.csv`,['檔名','藥品備註','顆數','時間','狀態'],[{'檔名':pillFilename,'藥品備註':$('pillNote').value.trim(),'顆數':pillMarkers.length,'時間':new Date().toLocaleString('zh-TW'),'狀態':pillCalibration}]);};
   render();
 })();
 </script>
