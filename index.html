@@ -48,7 +48,7 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠</h2>
+    <h2>4. 拍照數藥錠（測試版 r4）</h2>
     <p class="hint">預設自動檢查彩色區域與局部明暗輪廓，適用不同顏色的候選藥錠。把藥錠分開平放，四周留空再從正上方拍照。此功能適合分離的藥錠；相接、重疊、透明或與背景同色時可能算錯。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
@@ -69,7 +69,7 @@
       <button id="pillCsv" type="button" disabled>下載數藥記錄 CSV</button>
     </div>
     <div class="pill-settings"><label>藥品備註 <input id="pillNote" type="text" maxlength="80" placeholder="可留空，勿填病人資料"></label></div>
-    <p class="notice">數藥結果僅供整理參考，請逐顆核對標記及實物；這裡的數量不會自動加入處方藥品加總。</p>
+    <p class="notice">此版本尚未通過不同藥品與拍攝條件的完整驗證。標記數量不等於已確認顆數；請逐顆核對標記及實物，勿直接用於配藥數量確認。</p>
   </section>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
@@ -304,7 +304,7 @@
         const p=y*width+x,i=p*4,x0=Math.max(0,x-radius),x1=Math.min(width,x+radius+1),y0=Math.max(0,y-radius),y1=Math.min(height,y+radius+1);
         const mean=(integral[y1*stride+x1]-integral[y0*stride+x1]-integral[y1*stride+x0]+integral[y0*stride+x0])/((x1-x0)*(y1-y0));
         const chroma=Math.max(image[i],image[i+1],image[i+2])-Math.min(image[i],image[i+1],image[i+2]);
-        if(gray[p]>100 && gray[p]-mean>20 && chroma<65)bright[p]=1;
+        if(gray[p]>100 && gray[p]-mean>Math.max(8,Number(threshold)*20/58))bright[p]=1;
       }
       for(let start=0;start<size;start++){
         if(!bright[start]||seen[start])continue;
@@ -340,7 +340,7 @@
   function analyzePills(){
     if(!pillSource)return;const {width,height}=pillSource,ctx=pillSource.getContext('2d',{willReadFrequently:true});
     pillMarkers=findPills(ctx.getImageData(0,0,width,height).data,width,height,Number($('pillThreshold').value),Number($('pillMinArea').value));
-    pillHistory=[];drawPills();pillStatus(`自動估計 ${pillMarkers.length} 顆。請核對每個標記；反光、陰影及重疊可能誤判，部分相接區域使用面積推估。`);
+    pillHistory=[];drawPills();pillStatus(`找到 ${pillMarkers.length} 個候選標記，尚未核對。請逐顆對照照片及實物；反光、陰影、相接與重疊可能漏判或誤判。`);
   }
   function loadPillPhoto(file){return new Promise((resolve,reject)=>{
     const url=URL.createObjectURL(file),img=new Image();
