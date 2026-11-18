@@ -48,8 +48,8 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r4）</h2>
-    <p class="hint">預設自動檢查彩色區域與局部明暗輪廓，適用不同顏色的候選藥錠。把藥錠分開平放，四周留空再從正上方拍照。此功能適合分離的藥錠；相接、重疊、透明或與背景同色時可能算錯。</p>
+    <h2>4. 拍照數藥錠（測試版 r5）</h2>
+    <p class="hint">預設檢查彩色區域與局部明暗輪廓，並依候選物的形狀調整圓形及長橢圓篩選。結果受照片尺寸影響，仍需人工核對。把藥錠分開平放，四周留空再從正上方拍照。此功能適合分離的藥錠；相接、重疊、透明或與背景同色時可能算錯。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
       <label class="button secondary" for="pillGallery">選擇藥錠照片</label><input class="hidden-input" id="pillGallery" type="file" accept="image/*">
@@ -319,12 +319,14 @@
         }
         const w=maxX-minX+1,h=maxY-minY+1;
         const vx=sxx/tail-(sx/tail)**2,vy=syy/tail-(sy/tail)**2,cov=sxy/tail-sx*sy/(tail*tail),disc=Math.sqrt((vx-vy)**2+4*cov*cov),roundness=(vx+vy-disc)/Math.max(.001,vx+vy+disc);
-        if(roundness>.45 && tail>=Math.max(80,minArea*.25) && tail<size*.015 && w/h>.6 && w/h<1.6 && tail/(w*h)>.4 && minX>0 && minY>0 && maxX<width-1 && maxY<height-1)
-          candidates.push({x:sx/tail,y:sy/tail,area:tail,radius:Math.max(w,h)*.5});
+        if(roundness>.12 && tail>=Math.max(80,minArea*.25) && tail<size*.015 && w/h>.25 && w/h<4 && tail/(w*h)>.4 && minX>0 && minY>0 && maxX<width-1 && maxY<height-1)
+          candidates.push({x:sx/tail,y:sy/tail,area:tail,roundness,radius:Math.max(w,h)*.5});
       }
       const typical=median(candidates.map(p=>p.area));
+      const substantial=candidates.filter(p=>p.area>=typical*.5);
+      const minShapeRatio=substantial.length>=6?Math.max(.18,median(substantial.map(p=>p.roundness))*.3):.45;
       for(const c of candidates){
-        if(c.area<typical*.5)continue;
+        if(c.area<typical*.5 || c.roundness<minShapeRatio)continue;
         if(!points.some(p=>(p.x-c.x)**2+(p.y-c.y)**2<(c.radius*1.2)**2))points.push({x:c.x,y:c.y});
       }
     }
