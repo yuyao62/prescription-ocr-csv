@@ -48,18 +48,18 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r7）</h2>
+    <h2>4. 拍照數藥錠（測試版 r8）</h2>
     <p class="hint">將藥錠分開平放、四周留空，從正上方拍照。系統在照片上逐顆標記；相接、重疊、反光、透明或與背景同色的藥錠仍可能算錯，請逐一核對標記。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
       <label class="button secondary" for="pillGallery">選擇藥錠照片</label><input class="hidden-input" id="pillGallery" type="file" accept="image/*">
     </div>
     <div class="pill-settings">
-      <label>辨識模式 <select id="pillMode"><option value="auto">自動辨識（各種顏色）</option><option value="color">彩色膠囊／金屬藥盤</option><option value="background">單色背景／白色藥錠</option></select></label>
+      <label>辨識模式 <select id="pillMode"><option value="auto">自動辨識（各種顏色）</option><option value="metal">白色藥錠／金屬藥盤</option><option value="color">彩色膠囊／金屬藥盤</option><option value="background">單色背景／白色藥錠</option></select></label>
       <label>背景差異 <input id="pillThreshold" type="range" min="20" max="160" value="58"><output id="pillThresholdValue">58</output></label>
       <label>最小面積 <input id="pillMinArea" type="range" min="25" max="2000" step="25" value="150"><output id="pillMinAreaValue">150</output></label>
     </div>
-    <p class="hint">自動結果不準時，可調整模式、背景差異及最小面積，或按「圈選一顆校準」，依序點一顆完整藥錠的左上角、右下角。校準後仍可點標記刪除、點空白補上一顆。相接的藥粒請手動補標，系統不再依色塊面積猜測顆數。</p>
+    <p class="hint">自動結果不準時，可調整模式、背景差異及最小面積，或按「圈選一顆校準」，依序點一顆完整藥錠的左上角、右下角。校準後仍可點標記刪除、點空白補上一顆。金屬盤上的白色藥錠可選「白色藥錠／金屬藥盤」。重疊的藥粒仍需手動核對。</p>
     <p id="pillMessage" role="status" aria-live="polite">尚未選擇藥錠照片。</p>
     <canvas class="pill-preview" id="pillPreview" hidden aria-label="藥錠照片與計數標記"></canvas>
     <p class="pill-count" id="pillCount">— 顆</p>
@@ -253,6 +253,8 @@
     const bg=samples.map(v=>median(v)), spread=median(samples[0].map((_,i)=>
       Math.max(...samples.map((v,k)=>Math.abs(v[i]-bg[k])))));
     const uniform=spread<25, gray=new Uint8Array(size);
+    const tray=mode==='metal' || (mode==='auto' && Math.max(...bg)-Math.min(...bg)<32 &&
+      (bg[0]+bg[1]+bg[2])/3<215 && (bg[0]+bg[1]+bg[2])/3>65);
     const stride=width+1, integral=new Float64Array(stride*(height+1));
     for(let y=0;y<height;y++){
       let row=0;
@@ -264,7 +266,7 @@
     }
     // A uniform background allows direct color comparison. On a textured tray,
     // require contrast against a larger neighborhood so the tray is not counted.
-    const radius=Math.max(14,Math.round(Math.min(width,height)*.075));
+    const radius=Math.max(14,Math.round(Math.min(width,height)*(tray?.05:.075)));
     const mask=new Uint8Array(size), localLimit=Math.max(12,threshold*.43);
     for(let y=0;y<height;y++)for(let x=0;x<width;x++){
       const p=y*width+x,i=p*4;
@@ -274,23 +276,26 @@
       const local=Math.abs(gray[p]-mean);
       const color=Math.hypot(image[i]-bg[0],image[i+1]-bg[1],image[i+2]-bg[2])/Math.sqrt(3);
       const chroma=Math.max(image[i],image[i+1],image[i+2])-Math.min(image[i],image[i+1],image[i+2]);
-      const foreground=mode==='color'
+      const foreground=tray ? gray[p]>160 && gray[p]-mean>Math.max(18,threshold*.46) && chroma<55 : mode==='color'
         ? (uniform && color>threshold*.7 && chroma>25) || (local>localLimit && chroma>30)
         : (uniform && color>threshold*.68) || local>localLimit;
       if(foreground)mask[p]=1;
     }
-    // Join small gaps within a tablet without splitting a large tablet into
-    // multiple invented counts. Touching tablets remain one uncertain region.
-    const grown=new Uint8Array(size), closed=new Uint8Array(size);
-    for(let y=1;y<height-1;y++)for(let x=1;x<width-1;x++){
-      const p=y*width+x;
-      for(let dy=-1;dy<=1&&!grown[p];dy++)for(let dx=-1;dx<=1;dx++)if(mask[p+dy*width+dx]){grown[p]=1;break;}
-    }
-    for(let y=2;y<height-2;y++)for(let x=2;x<width-2;x++){
-      const p=y*width+x;let full=true;
-      for(let dy=-1;dy<=1&&full;dy++)for(let dx=-1;dx<=1;dx++)if(!grown[p+dy*width+dx]){full=false;break;}
-      if(full)closed[p]=1;
-    }
+    // A small erosion extracts solid tablet interiors and removes narrow
+    // glare lines. Separate cores are measured, never inferred from area.
+    const closed=new Uint8Array(size);
+    const erosion=tray?Math.max(2,Math.round(Math.min(width,height)*.005)):0;
+    if(tray){
+      const offsets=[];
+      for(let dy=-erosion;dy<=erosion;dy++)for(let dx=-erosion;dx<=erosion;dx++)
+        if(dx*dx+dy*dy<=erosion*erosion)offsets.push(dy*width+dx);
+      for(let y=erosion;y<height-erosion;y++)for(let x=erosion;x<width-erosion;x++){
+        const p=y*width+x;if(!mask[p])continue;
+        let full=true;for(const off of offsets)if(!mask[p+off]){full=false;break;}
+        if(full)closed[p]=1;
+      }
+    }else closed.set(mask);
+    const minimum=tray?Math.max(25,minArea*.25):minArea;
     const seen=new Uint8Array(size),queue=new Int32Array(size), candidates=[];
     for(let start=0;start<size;start++){
       if(!closed[start]||seen[start])continue;
@@ -309,12 +314,12 @@
       }
       const w=maxX-minX+1,h=maxY-minY+1,aspect=Math.max(w/h,h/w);
       const area=tail,fill=area/(w*h);
-      if(area>=minArea && area<size*.12 && w>=8 && h>=8 && aspect<5 && fill>.28 &&
+      if(area>=minimum && area<size*(tray?.025:.12) && w>=(tray?4:8) && h>=(tray?4:8) && aspect<(tray?4:5) && fill>(tray?.5:.28) &&
          minX>1 && minY>1 && maxX<width-2 && maxY<height-2)
         candidates.push({x:sx/area,y:sy/area,area});
     }
     const areas=candidates.map(c=>c.area),typical=median(areas);
-    const points=candidates.filter(c=>!typical || c.area>=Math.max(minArea,typical*.22));
+    const points=candidates.filter(c=>!typical || c.area>=Math.max(minimum,typical*.22));
     points.uncertain=points.filter(c=>typical && c.area>typical*2.3).length;
     return points;
   }
