@@ -48,7 +48,7 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r10）</h2>
+    <h2>4. 拍照數藥錠（測試版 r11）</h2>
     <p class="hint">將藥錠分開平放、四周留空，從正上方拍照。系統在照片上逐顆標記；相接、重疊、反光、透明或與背景同色的藥錠仍可能算錯，請逐一核對標記。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
@@ -276,11 +276,20 @@
       const local=Math.abs(gray[p]-mean);
       const color=Math.hypot(image[i]-bg[0],image[i+1]-bg[1],image[i+2]-bg[2])/Math.sqrt(3);
       const chroma=Math.max(image[i],image[i+1],image[i+2])-Math.min(image[i],image[i+1],image[i+2]);
-      const foreground=tray ? gray[p]>160 && gray[p]-mean>Math.max(18,threshold*.46) && chroma<55 : mode==='color'
+      const foreground=tray ? gray[p]>160 && gray[p]-mean>Math.max(18,threshold*.32) && chroma<55 : mode==='color'
         ? (uniform && color>threshold*.7 && chroma>25) || (local>localLimit && chroma>30)
         : (uniform && color>threshold*.68) || local>localLimit;
       if(foreground)mask[p]=1;
     }
+    // Fill enclosed lettering and marker holes before measuring tablet cores.
+    const outside=new Uint8Array(size), flood=new Int32Array(size);let fh=0,ft=0;
+    function seed(p){if(!mask[p]&&!outside[p]){outside[p]=1;flood[ft++]=p;}}
+    for(let x=0;x<width;x++){seed(x);seed((height-1)*width+x);}
+    for(let y=0;y<height;y++){seed(y*width);seed(y*width+width-1);}
+    while(fh<ft){const p=flood[fh++],x=p%width,y=Math.floor(p/width);
+      if(x)seed(p-1);if(x<width-1)seed(p+1);if(y)seed(p-width);if(y<height-1)seed(p+width);
+    }
+    if(tray)for(let p=0;p<size;p++)if(!outside[p])mask[p]=1;
     // A small erosion extracts solid tablet interiors and removes narrow
     // glare lines. Separate cores are measured, never inferred from area.
     const closed=new Uint8Array(size);
@@ -339,12 +348,52 @@
       }
       const edgeCoverage=boundary?sharp/boundary:0;
       if(area>=minimum && area<size*(tray?.025:.12) && w>=(tray?4:8) && h>=(tray?4:8) && aspect<(tray?4:5) && fill>(tray?.5:.28) &&
-         minX>1 && minY>1 && maxX<width-2 && maxY<height-2 && (!tray || edgeCoverage>=.38))
-        candidates.push({x:sx/area,y:sy/area,area,edgeCoverage});
+         minX>1 && minY>1 && maxX<width-2 && maxY<height-2 && (!tray || edgeCoverage>=.65))
+        candidates.push({x:sx/area,y:sy/area,area,edgeCoverage,pixels:Array.from(queue.subarray(0,tail))});
     }
     const areas=candidates.map(c=>c.area),typical=median(areas);
-    const points=candidates.filter(c=>!typical || c.area>=Math.max(minimum,typical*.22));
-    points.uncertain=points.filter(c=>typical && c.area>typical*2.3).length;
+    const accepted=candidates.filter(c=>!typical || c.area>=Math.max(minimum,typical*.35));
+    const distance=new Float32Array(size);
+    if(tray){
+      for(let p=0;p<size;p++)distance[p]=mask[p]?1e6:0;
+      const diag=Math.SQRT2;
+      for(let y=1;y<height-1;y++)for(let x=1;x<width-1;x++){
+        const p=y*width+x;if(distance[p])distance[p]=Math.min(distance[p],distance[p-1]+1,distance[p-width]+1,distance[p-width-1]+diag,distance[p-width+1]+diag);
+      }
+      for(let y=height-2;y>0;y--)for(let x=width-2;x>0;x--){
+        const p=y*width+x;if(distance[p])distance[p]=Math.min(distance[p],distance[p+1]+1,distance[p+width]+1,distance[p+width+1]+diag,distance[p+width-1]+diag);
+      }
+    }
+    const points=[];
+    for(const c of accepted){
+      let centers=[];
+      if(tray && c.area>typical*1.65){
+        const ranked=c.pixels.slice().sort((a,b)=>distance[b]-distance[a]);
+        for(const p of ranked){
+          const r=distance[p],x=p%width,y=Math.floor(p/width);
+          if(r<distance[ranked[0]]*.65)break;
+          if(centers.every(q=>{
+            if(Math.hypot(x-q.x,y-q.y)<=2.15*Math.max(r,q.r))return false;
+            let neck=Infinity;
+            for(let t=.2;t<=.8;t+=.1){const px=Math.round(x*(1-t)+q.x*t),py=Math.round(y*(1-t)+q.y*t);neck=Math.min(neck,distance[py*width+px]);}
+            return neck<Math.min(r,q.r)*.8;
+          }))centers.push({x,y,r});
+          if(centers.length===3)break;
+        }
+        if(centers.length>1){
+          const groups=centers.map(()=>({x:0,y:0,n:0}));
+          for(const p of c.pixels){const x=p%width,y=Math.floor(p/width);let best=0,d=Infinity;
+            centers.forEach((q,i)=>{const dd=(x-q.x)**2+(y-q.y)**2;if(dd<d){d=dd;best=i;}});
+            groups[best].x+=x;groups[best].y+=y;groups[best].n++;
+          }
+          if(groups.every(g=>g.n>typical*.5)){
+            points.push(...groups.map(g=>({x:g.x/g.n,y:g.y/g.n,area:g.n})));continue;
+          }
+        }
+      }
+      points.push({x:c.x,y:c.y,area:c.area,edgeCoverage:c.edgeCoverage});
+    }
+    points.uncertain=points.filter(c=>typical && c.area>typical*1.65).length;
     return points;
   }
   function drawPills(){
