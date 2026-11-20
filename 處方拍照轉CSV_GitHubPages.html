@@ -48,8 +48,8 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r6）</h2>
-    <p class="hint">預設檢查彩色區域與局部明暗輪廓，並依候選物的形狀調整圓形及長橢圓篩選。結果受照片尺寸影響，仍需人工核對。把藥錠分開平放，四周留空再從正上方拍照。此功能適合分離的藥錠；相接、重疊、透明或與背景同色時可能算錯。</p>
+    <h2>4. 拍照數藥錠（測試版 r7）</h2>
+    <p class="hint">將藥錠分開平放、四周留空，從正上方拍照。系統在照片上逐顆標記；相接、重疊、反光、透明或與背景同色的藥錠仍可能算錯，請逐一核對標記。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
       <label class="button secondary" for="pillGallery">選擇藥錠照片</label><input class="hidden-input" id="pillGallery" type="file" accept="image/*">
@@ -59,7 +59,7 @@
       <label>背景差異 <input id="pillThreshold" type="range" min="20" max="160" value="58"><output id="pillThresholdValue">58</output></label>
       <label>最小面積 <input id="pillMinArea" type="range" min="25" max="2000" step="25" value="150"><output id="pillMinAreaValue">150</output></label>
     </div>
-    <p class="hint">自動結果不準時，按「圈選一顆校準」，依序點一顆完整藥錠的左上角、右下角（選橫放或直放的一顆，框內勿包含其他藥或陰影）。校準會重新比對同張照片的尺寸、外觀及邊界。完成後仍可點標記刪除、點空白補上一顆。</p>
+    <p class="hint">自動結果不準時，可調整模式、背景差異及最小面積，或按「圈選一顆校準」，依序點一顆完整藥錠的左上角、右下角。校準後仍可點標記刪除、點空白補上一顆。相接的藥粒請手動補標，系統不再依色塊面積猜測顆數。</p>
     <p id="pillMessage" role="status" aria-live="polite">尚未選擇藥錠照片。</p>
     <canvas class="pill-preview" id="pillPreview" hidden aria-label="藥錠照片與計數標記"></canvas>
     <p class="pill-count" id="pillCount">— 顆</p>
@@ -244,93 +244,78 @@
   const pillStatus=s=>{$('pillMessage').textContent=s;};
   function median(values){values.sort((a,b)=>a-b);return values[Math.floor(values.length/2)]||0;}
   function findPills(image, width, height, threshold, minArea){
-    const red=[],green=[],blue=[],stride=Math.max(2,Math.floor(Math.min(width,height)/100));
-    const border=Math.max(2,Math.floor(Math.min(width,height)*.025));
-    for(let y=border;y<height-border;y+=stride)for(const x of [border,width-border-1]){const i=(y*width+x)*4;red.push(image[i]);green.push(image[i+1]);blue.push(image[i+2]);}
-    for(let x=border;x<width-border;x+=stride)for(const y of [border,height-border-1]){const i=(y*width+x)*4;red.push(image[i]);green.push(image[i+1]);blue.push(image[i+2]);}
-    const bg=[median(red),median(green),median(blue)], size=width*height;
-    const autoMode=$('pillMode').value==='auto';
-    const colorMode=autoMode || $('pillMode').value==='color', components=[];
-    const mask=new Uint8Array(size), visited=new Uint8Array(size), queue=new Int32Array(size), points=[];
-    for(let p=0;p<size;p++){const i=p*4, dr=image[i]-bg[0], dg=image[i+1]-bg[1], db=image[i+2]-bg[2];const hi=Math.max(image[i],image[i+1],image[i+2]),lo=Math.min(image[i],image[i+1],image[i+2]);if(colorMode ? (hi>45 && hi-lo>38 && (hi-lo)/Math.max(hi,1)>.32) : dr*dr+dg*dg+db*db>threshold*threshold)mask[p]=1;}
-    for(let p=0;p<size;p++){
-      if(!mask[p]||visited[p])continue;
-      let head=0,tail=1,area=0,sumX=0,sumY=0,touchesEdge=false;queue[0]=p;visited[p]=1;
+    const size=width*height, mode=$('pillMode').value;
+    const samples=[[],[],[]], inset=Math.max(2,Math.round(Math.min(width,height)*.025));
+    const step=Math.max(2,Math.floor(Math.min(width,height)/100));
+    function sample(x,y){const i=(y*width+x)*4;for(let k=0;k<3;k++)samples[k].push(image[i+k]);}
+    for(let y=inset;y<height-inset;y+=step){sample(inset,y);sample(width-inset-1,y);}
+    for(let x=inset;x<width-inset;x+=step){sample(x,inset);sample(x,height-inset-1);}
+    const bg=samples.map(v=>median(v)), spread=median(samples[0].map((_,i)=>
+      Math.max(...samples.map((v,k)=>Math.abs(v[i]-bg[k])))));
+    const uniform=spread<25, gray=new Uint8Array(size);
+    const stride=width+1, integral=new Float64Array(stride*(height+1));
+    for(let y=0;y<height;y++){
+      let row=0;
+      for(let x=0;x<width;x++){
+        const p=y*width+x,i=p*4;
+        gray[p]=Math.round((image[i]*.299+image[i+1]*.587+image[i+2]*.114));
+        row+=gray[p];integral[(y+1)*stride+x+1]=integral[y*stride+x+1]+row;
+      }
+    }
+    // A uniform background allows direct color comparison. On a textured tray,
+    // require contrast against a larger neighborhood so the tray is not counted.
+    const radius=Math.max(14,Math.round(Math.min(width,height)*.075));
+    const mask=new Uint8Array(size), localLimit=Math.max(12,threshold*.43);
+    for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+      const p=y*width+x,i=p*4;
+      const x0=Math.max(0,x-radius),x1=Math.min(width,x+radius+1);
+      const y0=Math.max(0,y-radius),y1=Math.min(height,y+radius+1);
+      const mean=(integral[y1*stride+x1]-integral[y0*stride+x1]-integral[y1*stride+x0]+integral[y0*stride+x0])/((x1-x0)*(y1-y0));
+      const local=Math.abs(gray[p]-mean);
+      const color=Math.hypot(image[i]-bg[0],image[i+1]-bg[1],image[i+2]-bg[2])/Math.sqrt(3);
+      const chroma=Math.max(image[i],image[i+1],image[i+2])-Math.min(image[i],image[i+1],image[i+2]);
+      const foreground=mode==='color'
+        ? (uniform && color>threshold*.7 && chroma>25) || (local>localLimit && chroma>30)
+        : (uniform && color>threshold*.68) || local>localLimit;
+      if(foreground)mask[p]=1;
+    }
+    // Join small gaps within a tablet without splitting a large tablet into
+    // multiple invented counts. Touching tablets remain one uncertain region.
+    const grown=new Uint8Array(size), closed=new Uint8Array(size);
+    for(let y=1;y<height-1;y++)for(let x=1;x<width-1;x++){
+      const p=y*width+x;
+      for(let dy=-1;dy<=1&&!grown[p];dy++)for(let dx=-1;dx<=1;dx++)if(mask[p+dy*width+dx]){grown[p]=1;break;}
+    }
+    for(let y=2;y<height-2;y++)for(let x=2;x<width-2;x++){
+      const p=y*width+x;let full=true;
+      for(let dy=-1;dy<=1&&full;dy++)for(let dx=-1;dx<=1;dx++)if(!grown[p+dy*width+dx]){full=false;break;}
+      if(full)closed[p]=1;
+    }
+    const seen=new Uint8Array(size),queue=new Int32Array(size), candidates=[];
+    for(let start=0;start<size;start++){
+      if(!closed[start]||seen[start])continue;
+      let head=0,tail=1,sx=0,sy=0,minX=width,maxX=0,minY=height,maxY=0;
+      queue[0]=start;seen[start]=1;
       while(head<tail){
-        const current=queue[head++],x=current%width,y=(current/width)|0;area++;sumX+=x;sumY+=y;
-        if(x===0||y===0||x===width-1||y===height-1)touchesEdge=true;
+        const p=queue[head++],x=p%width,y=Math.floor(p/width);
+        sx+=x;sy+=y;minX=Math.min(minX,x);maxX=Math.max(maxX,x);
+        minY=Math.min(minY,y);maxY=Math.max(maxY,y);
         for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
-          if(!dx&&!dy)continue;const nx=x+dx,ny=y+dy;if(nx<0||nx>=width||ny<0||ny>=height)continue;
-          const q=ny*width+nx;if(mask[q]&&!visited[q]){visited[q]=1;queue[tail++]=q;}
+          if(!dx&&!dy)continue;
+          const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=width||ny>=height)continue;
+          const q=ny*width+nx;
+          if(closed[q]&&!seen[q]){seen[q]=1;queue[tail++]=q;}
         }
       }
-      if(!touchesEdge&&area>=minArea&&area<size*.35){
-        if(colorMode)components.push({area,pixels:Array.from(queue.subarray(0,tail)),x:sumX/area,y:sumY/area});
-        else points.push({x:sumX/area,y:sumY/area});
-      }
+      const w=maxX-minX+1,h=maxY-minY+1,aspect=Math.max(w/h,h/w);
+      const area=tail,fill=area/(w*h);
+      if(area>=minArea && area<size*.12 && w>=8 && h>=8 && aspect<5 && fill>.28 &&
+         minX>1 && minY>1 && maxX<width-2 && maxY<height-2)
+        candidates.push({x:sx/area,y:sy/area,area});
     }
-    if(colorMode && components.length){
-      const sorted=components.map(c=>c.area).sort((a,b)=>a-b);
-      const large=sorted.filter(a=>a>=sorted[sorted.length-1]*.22);
-      const typical=median(large.slice(0,Math.max(1,Math.ceil(large.length*.6))));
-      for(const c of components){
-        if(c.area<typical*.32)continue;
-        const count=Math.min(6,Math.max(1,Math.round(c.area/typical)));
-        if(count===1){points.push({x:c.x,y:c.y});continue;}
-        const coords=c.pixels.map(p=>({x:p%width,y:Math.floor(p/width)}));
-        let centers=[coords[0]];
-        while(centers.length<count){
-          let best=coords[0],distance=-1;
-          for(const p of coords){const d=Math.min(...centers.map(q=>(p.x-q.x)**2+(p.y-q.y)**2));if(d>distance){distance=d;best=p;}}
-          centers.push(best);
-        }
-        for(let round=0;round<15;round++){
-          const sums=centers.map(()=>({x:0,y:0,n:0}));
-          for(const p of coords){let index=0,distance=Infinity;centers.forEach((q,i)=>{const d=(p.x-q.x)**2+(p.y-q.y)**2;if(d<distance){distance=d;index=i;}});sums[index].x+=p.x;sums[index].y+=p.y;sums[index].n++;}
-          centers=centers.map((q,i)=>sums[i].n?{x:sums[i].x/sums[i].n,y:sums[i].y/sums[i].n}:q);
-        }
-        points.push(...centers);
-      }
-    }
-
-    if(autoMode){
-      const stride=width+1, integral=new Float64Array((width+1)*(height+1)), gray=new Float32Array(size);
-      for(let y=0;y<height;y++){let row=0;for(let x=0;x<width;x++){
-        const p=y*width+x,i=p*4;gray[p]=(image[i]+image[i+1]+image[i+2])/3;row+=gray[p];
-        integral[(y+1)*stride+x+1]=integral[y*stride+x+1]+row;
-      }}
-      const radius=Math.max(15,Math.round(Math.min(width,height)*.05));
-      const bright=new Uint8Array(size), seen=new Uint8Array(size), candidates=[];
-      for(let y=0;y<height;y++)for(let x=0;x<width;x++){
-        const p=y*width+x,i=p*4,x0=Math.max(0,x-radius),x1=Math.min(width,x+radius+1),y0=Math.max(0,y-radius),y1=Math.min(height,y+radius+1);
-        const mean=(integral[y1*stride+x1]-integral[y0*stride+x1]-integral[y1*stride+x0]+integral[y0*stride+x0])/((x1-x0)*(y1-y0));
-        const chroma=Math.max(image[i],image[i+1],image[i+2])-Math.min(image[i],image[i+1],image[i+2]);
-        if(gray[p]>100 && gray[p]-mean>Math.max(8,Number(threshold)*20/58))bright[p]=1;
-      }
-      for(let start=0;start<size;start++){
-        if(!bright[start]||seen[start])continue;
-        let head=0,tail=1,sx=0,sy=0,sxx=0,syy=0,sxy=0,minX=width,maxX=0,minY=height,maxY=0;queue[0]=start;seen[start]=1;
-        while(head<tail){
-          const p=queue[head++],x=p%width,y=Math.floor(p/width);sx+=x;sy+=y;sxx+=x*x;syy+=y*y;sxy+=x*y;
-          minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
-          for(const [dx,dy] of [[-1,0],[1,0],[0,-1],[0,1]]){
-            const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=width||ny>=height)continue;
-            const q=ny*width+nx;if(bright[q]&&!seen[q]){seen[q]=1;queue[tail++]=q;}
-          }
-        }
-        const w=maxX-minX+1,h=maxY-minY+1;
-        const vx=sxx/tail-(sx/tail)**2,vy=syy/tail-(sy/tail)**2,cov=sxy/tail-sx*sy/(tail*tail),disc=Math.sqrt((vx-vy)**2+4*cov*cov),roundness=(vx+vy-disc)/Math.max(.001,vx+vy+disc);
-        if(roundness>.12 && tail>=Math.max(80,minArea*.25) && tail<size*.015 && w/h>.25 && w/h<4 && tail/(w*h)>.4 && minX>0 && minY>0 && maxX<width-1 && maxY<height-1)
-          candidates.push({x:sx/tail,y:sy/tail,area:tail,roundness,radius:Math.max(w,h)*.5});
-      }
-      const typical=median(candidates.map(p=>p.area));
-      const substantial=candidates.filter(p=>p.area>=typical*.5);
-      const minShapeRatio=substantial.length>=6?Math.max(.18,median(substantial.map(p=>p.roundness))*.3):.45;
-      for(const c of candidates){
-        if(c.area<typical*.5 || c.roundness<minShapeRatio)continue;
-        if(!points.some(p=>(p.x-c.x)**2+(p.y-c.y)**2<(c.radius*1.2)**2))points.push({x:c.x,y:c.y});
-      }
-    }
+    const areas=candidates.map(c=>c.area),typical=median(areas);
+    const points=candidates.filter(c=>!typical || c.area>=Math.max(minArea,typical*.22));
+    points.uncertain=points.filter(c=>typical && c.area>typical*2.3).length;
     return points;
   }
   function drawPills(){
@@ -343,7 +328,8 @@
   function analyzePills(){
     if(!pillSource)return;sampleMode=false;sampleCorner=null;$('pillCancelSample').hidden=true;pillCalibration='自動候選，待人工核對';const {width,height}=pillSource,ctx=pillSource.getContext('2d',{willReadFrequently:true});
     pillMarkers=findPills(ctx.getImageData(0,0,width,height).data,width,height,Number($('pillThreshold').value),Number($('pillMinArea').value));
-    pillHistory=[];drawPills();pillStatus(`找到 ${pillMarkers.length} 個候選標記，尚未核對。請逐顆對照照片及實物；反光、陰影、相接與重疊可能漏判或誤判。`);
+    const uncertain=pillMarkers.uncertain||0;
+    pillHistory=[];drawPills();pillStatus(`找到 ${pillMarkers.length} 個候選標記，尚未核對。${uncertain?'其中 '+uncertain+' 處面積偏大，請檢查是否有藥錠相接。':''}請逐顆對照照片及實物；反光、陰影、相接與重疊可能漏判或誤判。`);
   }
   function loadPillPhoto(file){return new Promise((resolve,reject)=>{
     const url=URL.createObjectURL(file),img=new Image();
@@ -409,17 +395,23 @@ function detectSampleMatches(a,w,h,major,minor,polarity=1,refX=0,refY=0){
         for(let k=0;k<16;k++){const t=k*Math.PI/8,ix=Math.round(cx+Math.cos(t)*bw*.18),iy=Math.round(cy+Math.sin(t)*bh*.18),ox=Math.max(0,Math.min(w-1,Math.round(cx+Math.cos(t)*bw*.7))),oy=Math.max(0,Math.min(h-1,Math.round(cy+Math.sin(t)*bh*.7)));
           const i=(iy*w+ix)*4,o=(oy*w+ox)*4;inside+=(a[i]+a[i+1]+a[i+2])/48;outside+=(a[o]+a[o+1]+a[o+2])/48;
         }
-        const before=pillMarkers.map(p=>({...p}));let added=0,removed=0;
-        if(inside>=outside){
-          const hits=detectSampleMatches(a,w,h,major,minor,1,cx,cy),best=hits[0]?.score||0;
-          if(best>0){
-            const filtered=before.filter(p=>hits.some(q=>q.score>=best*.25&&(p.x-q.x)**2+(p.y-q.y)**2<(major*.65)**2));
-            for(const q of hits){if(q.score<best*.5)continue;if(!filtered.some(p=>(p.x-q.x)**2+(p.y-q.y)**2<(minor*.8)**2)){filtered.push({x:q.x,y:q.y});added++;}}
-            if(added){removed=before.length-(filtered.length-added);pillMarkers=filtered;}
+        const before=pillMarkers.map(p=>({...p}));let added=0;
+        const polarity=inside>=outside?1:-1;
+        const hits=detectSampleMatches(a,w,h,major,minor,polarity,cx,cy);
+        const sample=hits.find(q=>(q.x-cx)**2+(q.y-cy)**2<(major*.45)**2);
+        // Anchor the score to the selected pill, not the strongest highlight
+        // elsewhere. Calibration may add candidates but never erase a mark.
+        if(sample && sample.score>=20){
+          for(const q of hits){
+            if(q.score<Math.max(20,sample.score*.7) || added>=100)continue;
+            if(!pillMarkers.some(p=>(p.x-q.x)**2+(p.y-q.y)**2<(major*.65)**2)){
+              pillMarkers.push({x:q.x,y:q.y});added++;
+            }
           }
         }
-        pillHistory.push(before);pillCalibration='樣本校準後，待人工核對';drawPills();
-        pillStatus(added ? '校準後 '+pillMarkers.length+' 個候選標記；補入 '+added+' 處、排除 '+removed+' 處。請逐顆核對，必要時用復原恢復。' : '這次樣本未提供更強的新候選，保留原 '+pillMarkers.length+' 個標記，仍需人工核對。');
+        if(added)pillHistory.push(before);
+        pillCalibration='樣本校準後，待人工核對';drawPills();
+        pillStatus(added ? '補入 '+added+' 個候選標記，共 '+pillMarkers.length+' 個；請逐顆核對，必要時可復原。' : '樣本未找到可信的新候選，保留原 '+pillMarkers.length+' 個標記。請點照片手動補上漏掉的藥錠。');
       }catch(err){drawPills();pillStatus('校準未完成：'+String(err.message||err)+'。原標記仍保留。');}
       finally{$('pillCalibrate').disabled=false;$('pillReset').disabled=false;}
     },30);
@@ -430,7 +422,7 @@ function detectSampleMatches(a,w,h,major,minor,polarity=1,refX=0,refY=0){
     const x=(e.clientX-rect.left)*canvas.width/rect.width,y=(e.clientY-rect.top)*canvas.height/rect.height;
     if(sampleMode){sampleClick(x,y);return;}
     const radius=Math.max(18,canvas.width*.025),index=pillMarkers.findIndex(p=>(p.x-x)**2+(p.y-y)**2<radius**2);
-    pillHistory.push(pillMarkers.map(p=>({...p})));if(index>=0)pillMarkers.splice(index,1);else pillMarkers.push({x,y});drawPills();pillStatus(`手動修正為 ${pillMarkers.length} 顆。請對照實物核對。`);
+    pillHistory.push(pillMarkers.map(p=>({...p})));if(index>=0)pillMarkers.splice(index,1);else pillMarkers.push({x,y});pillCalibration='手動修正標記，待人工核對';drawPills();pillStatus(`手動修正為 ${pillMarkers.length} 顆。請對照實物核對。`);
   });
   $('pillUndo').onclick=()=>{if(!pillHistory.length)return;pillMarkers=pillHistory.pop();drawPills();pillStatus(`已復原，目前 ${pillMarkers.length} 顆。`);};
   $('pillCsv').onclick=()=>{if(!pillSource)return;downloadCSV(`數藥記錄_${stamp()}.csv`,['檔名','藥品備註','顆數','時間','狀態'],[{'檔名':pillFilename,'藥品備註':$('pillNote').value.trim(),'顆數':pillMarkers.length,'時間':new Date().toLocaleString('zh-TW'),'狀態':pillCalibration}]);};
