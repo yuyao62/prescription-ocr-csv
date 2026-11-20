@@ -48,7 +48,7 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r9）</h2>
+    <h2>4. 拍照數藥錠（測試版 r10）</h2>
     <p class="hint">將藥錠分開平放、四周留空，從正上方拍照。系統在照片上逐顆標記；相接、重疊、反光、透明或與背景同色的藥錠仍可能算錯，請逐一核對標記。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
@@ -350,8 +350,8 @@
   function drawPills(){
     if(!pillSource)return;const canvas=$('pillPreview'),ctx=canvas.getContext('2d');
     canvas.width=pillSource.width;canvas.height=pillSource.height;ctx.drawImage(pillSource,0,0);
-    const radius=Math.max(13,Math.round(canvas.width*.019));ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=`bold ${Math.round(radius*.92)}px system-ui`;
-    pillMarkers.forEach((point,i)=>{ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fillStyle='#176c52';ctx.fill();ctx.lineWidth=3;ctx.strokeStyle='white';ctx.stroke();ctx.fillStyle='white';ctx.fillText(String(i+1),point.x,point.y);});
+    const radius=Math.max(3,canvas.width*.0075);
+    pillMarkers.forEach(point=>{ctx.beginPath();ctx.arc(point.x,point.y,radius,0,Math.PI*2);ctx.fillStyle='#00c878';ctx.fill();ctx.lineWidth=Math.max(.75,canvas.width*.001);ctx.strokeStyle='rgba(255,255,255,.7)';ctx.stroke();});
     $('pillCount').textContent=`${pillMarkers.length} 顆`;$('pillCsv').disabled=false;$('pillReset').disabled=false;$('pillCalibrate').disabled=false;$('pillUndo').disabled=pillHistory.length===0;canvas.hidden=false;
   }
   function analyzePills(){
@@ -450,7 +450,9 @@ function detectSampleMatches(a,w,h,major,minor,polarity=1,refX=0,refY=0){
     if(!pillSource)return;const canvas=$('pillPreview'),rect=canvas.getBoundingClientRect();
     const x=(e.clientX-rect.left)*canvas.width/rect.width,y=(e.clientY-rect.top)*canvas.height/rect.height;
     if(sampleMode){sampleClick(x,y);return;}
-    const radius=Math.max(18,canvas.width*.025),index=pillMarkers.findIndex(p=>(p.x-x)**2+(p.y-y)**2<radius**2);
+    const radius=Math.max(18,canvas.width*.025);
+    let index=-1,nearest=radius**2;
+    pillMarkers.forEach((p,i)=>{const distance=(p.x-x)**2+(p.y-y)**2;if(distance<nearest){nearest=distance;index=i;}});
     pillHistory.push(pillMarkers.map(p=>({...p})));if(index>=0)pillMarkers.splice(index,1);else pillMarkers.push({x,y});pillCalibration='手動修正標記，待人工核對';drawPills();pillStatus(`手動修正為 ${pillMarkers.length} 顆。請對照實物核對。`);
   });
   $('pillUndo').onclick=()=>{if(!pillHistory.length)return;pillMarkers=pillHistory.pop();drawPills();pillStatus(`已復原，目前 ${pillMarkers.length} 顆。`);};
