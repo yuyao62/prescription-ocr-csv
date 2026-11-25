@@ -48,7 +48,7 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r11）</h2>
+    <h2>4. 拍照數藥錠（測試版 r12）</h2>
     <p class="hint">將藥錠分開平放、四周留空，從正上方拍照。系統在照片上逐顆標記；相接、重疊、反光、透明或與背景同色的藥錠仍可能算錯，請逐一核對標記。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
@@ -243,6 +243,50 @@
   let pillSource=null, pillFilename='', pillMarkers=[], pillHistory=[], sampleMode=false, sampleCorner=null, pillCalibration='自動候選，待人工核對';
   const pillStatus=s=>{$('pillMessage').textContent=s;};
   function median(values){values.sort((a,b)=>a-b);return values[Math.floor(values.length/2)]||0;}
+  function findColoredPills(image,width,height,minArea,threshold){
+    // Saturated tablets must remain visible even when auto selects a metal tray.
+    // Erode the color mask to break narrow contacts and discard colored specks.
+    const size=width*height,mask=new Uint8Array(size),core=new Uint8Array(size);
+    for(let p=0;p<size;p++){
+      const i=p*4,hi=Math.max(image[i],image[i+1],image[i+2]),lo=Math.min(image[i],image[i+1],image[i+2]);
+      if(hi-lo>Math.max(45,threshold*.8) && (hi-lo)/Math.max(1,hi)>.38 && hi>65)mask[p]=1;
+    }
+    const radius=Math.max(1,Math.round(Math.min(width,height)*.004));
+    for(let y=radius;y<height-radius;y++)for(let x=radius;x<width-radius;x++){
+      const p=y*width+x;if(!mask[p])continue;let full=true;
+      for(let dy=-radius;dy<=radius && full;dy++)for(let dx=-radius;dx<=radius;dx++){
+        if(dx*dx+dy*dy<=radius*radius && !mask[p+dy*width+dx]){full=false;break;}
+      }
+      if(full)core[p]=1;
+    }
+    const distance=new Float32Array(size);
+    for(let p=0;p<size;p++)distance[p]=mask[p]?1e6:0;
+    for(let y=1;y<height-1;y++)for(let x=1;x<width-1;x++){const p=y*width+x;if(distance[p])distance[p]=Math.min(distance[p],distance[p-1]+1,distance[p-width]+1,distance[p-width-1]+Math.SQRT2,distance[p-width+1]+Math.SQRT2);}
+    for(let y=height-2;y>0;y--)for(let x=width-2;x>0;x--){const p=y*width+x;if(distance[p])distance[p]=Math.min(distance[p],distance[p+1]+1,distance[p+width]+1,distance[p+width-1]+Math.SQRT2,distance[p+width+1]+Math.SQRT2);}
+    const queue=new Int32Array(size),points=[];
+    for(let start=0;start<size;start++){
+      if(!core[start])continue;let head=0,tail=1,sx=0,sy=0,minX=width,minY=height,maxX=0,maxY=0;
+      queue[0]=start;core[start]=0;
+      while(head<tail){const p=queue[head++],x=p%width,y=Math.floor(p/width);
+        sx+=x;sy+=y;minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+        for(const [dx,dy] of [[-1,0],[1,0],[0,-1],[0,1]]){const nx=x+dx,ny=y+dy;
+          if(nx<0||ny<0||nx>=width||ny>=height)continue;const q=ny*width+nx;
+          if(core[q]){core[q]=0;queue[tail++]=q;}
+        }
+      }
+      const w=maxX-minX+1,h=maxY-minY+1;
+      if(tail>=Math.max(25,minArea*.45) && tail<size*.12 && Math.max(w/h,h/w)<3.5 && tail/(w*h)>.25 && minX>radius && minY>radius && maxX<width-radius-1 && maxY<height-radius-1){
+        const ranked=Array.from(queue.subarray(0,tail)).sort((a,b)=>distance[b]-distance[a]),centers=[];
+        const largest=distance[ranked[0]];
+        for(const p of ranked){const r=distance[p],x=p%width,y=Math.floor(p/width);
+          if(r<Math.max(radius+1,largest*.65))break;
+          if(centers.every(q=>Math.hypot(x-q.x,y-q.y)>1.3*Math.max(r,q.r)))centers.push({x,y,r});
+        }
+        for(const q of centers)points.push({x:q.x,y:q.y,area:Math.PI*q.r*q.r,colored:true});
+      }
+    }
+    return points;
+  }
   function findPills(image, width, height, threshold, minArea){
     const size=width*height, mode=$('pillMode').value;
     const samples=[[],[],[]], inset=Math.max(2,Math.round(Math.min(width,height)*.025));
@@ -393,8 +437,12 @@
       }
       points.push({x:c.x,y:c.y,area:c.area,edgeCoverage:c.edgeCoverage});
     }
-    points.uncertain=points.filter(c=>typical && c.area>typical*1.65).length;
-    return points;
+    const colored=(mode==='auto'||mode==='color')?findColoredPills(image,width,height,minArea,threshold):[];
+    // Prefer the solid color core over another detector's mark on its edge.
+    const merged=points.filter(p=>!colored.some(q=>Math.hypot(p.x-q.x,p.y-q.y)<Math.sqrt(q.area/Math.PI)*1.7));
+    merged.push(...colored);
+    merged.uncertain=merged.filter(c=>typical && !c.colored && c.area>typical*1.65).length;
+    return merged;
   }
   function drawPills(){
     if(!pillSource)return;const canvas=$('pillPreview'),ctx=canvas.getContext('2d');
