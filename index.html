@@ -15,6 +15,11 @@
     #summary{margin-top:12px}.foot{font-size:.86rem;color:#52695b;margin-top:18px}label.check{display:inline-flex;gap:7px;align-items:center;font-size:.9rem}.count{font-size:.9rem;color:#476053}
     .pill-count{font-size:2rem;font-weight:750;color:#176c52;margin:10px 0}.pill-preview{display:block;max-width:100%;height:auto;border-radius:10px;border:1px solid #c7d7cc;touch-action:manipulation;cursor:crosshair;margin-top:12px}.pill-preview[hidden]{display:none}.pill-settings{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:12px 0}.pill-settings label{display:flex;align-items:center;gap:8px}.pill-settings input[type=range]{width:140px}.pill-settings input[type=text]{font:inherit;padding:8px;border:1px solid #bacdc1;border-radius:8px;max-width:160px}
     @media(max-width:600px){.card{padding:15px}h1{font-size:1.25rem}.button,button{flex:1}.photo-head button{flex:0 0 auto}.actions{align-items:stretch}.table-wrap{margin-left:-15px;margin-right:-15px}.table-wrap table{margin:0 15px}}
+    button[hidden]{display:none!important}
+    .pill-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}
+    .pill-actions button{width:100%;min-width:0;min-height:48px;padding:12px 10px;line-height:1.4}
+    .pill-actions #pillNext,.pill-actions #pillCsv{grid-column:1/-1}
+    @media(min-width:601px){.pill-actions{grid-template-columns:repeat(3,minmax(0,1fr))}}
   </style>
 </head>
 <body>
@@ -48,7 +53,7 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r13）</h2>
+    <h2>4. 拍照數藥錠（測試版 r14）</h2>
     <p class="hint">將藥錠分開平放、四周留空，從正上方拍照。系統在照片上逐顆標記；相接、重疊、反光、透明或與背景同色的藥錠仍可能算錯，請逐一核對標記。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
@@ -63,7 +68,7 @@
     <p id="pillMessage" role="status" aria-live="polite">尚未選擇藥錠照片。</p>
     <canvas class="pill-preview" id="pillPreview" hidden aria-label="藥錠照片與計數標記"></canvas>
     <p class="pill-count" id="pillCount">— 顆</p>
-    <div class="actions">
+    <div class="actions pill-actions">
       <button id="pillNext" type="button">📷 重新拍照／數下一個</button>
       <button id="pillCalibrate" class="secondary" type="button" disabled>圈選一顆校準</button><button id="pillCancelSample" class="light" type="button" hidden>取消圈選</button>
       <button class="secondary" id="pillReset" type="button" disabled>重新自動計算</button>
