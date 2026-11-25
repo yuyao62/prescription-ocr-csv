@@ -53,18 +53,18 @@
     <p class="foot">此工具只協助整理候選資料；訂購與調劑前仍須由人員核對原始處方、健保碼、品項和數量。支援 JPG、PNG 及手機瀏覽器能讀取的照片格式。</p>
   </section>
   <section class="card" id="pill-counter">
-    <h2>4. 拍照數藥錠（測試版 r16）</h2>
+    <h2>4. 拍照數藥錠（測試版 r17）</h2>
     <p class="hint">將藥錠分開平放、四周留空，從正上方拍照。系統在照片上逐顆標記；相接、重疊、反光、透明或與背景同色的藥錠仍可能算錯，請逐一核對標記。</p>
     <div class="actions">
       <label class="button" for="pillCamera">📷 拍藥錠</label><input class="hidden-input" id="pillCamera" type="file" accept="image/*" capture="environment">
       <label class="button secondary" for="pillGallery">選擇藥錠照片</label><input class="hidden-input" id="pillGallery" type="file" accept="image/*">
     </div>
     <div class="pill-settings">
-      <label>辨識模式 <select id="pillMode"><option value="ai">自動辨識藥錠／膠囊（AI）</option><option value="auto">舊版辨識（顏色／亮度）</option><option value="metal">白色藥錠／金屬藥盤</option><option value="color">彩色膠囊／金屬藥盤</option><option value="background">單色背景／白色藥錠</option></select></label>
+      <label>辨識模式 <select id="pillMode"><option value="ai">AI 藥錠／膠囊（標準）</option><option value="ai-fast">快速 AI（較易漏判，請核對）</option><option value="auto">舊版辨識（顏色／亮度）</option><option value="metal">白色藥錠／金屬藥盤</option><option value="color">彩色膠囊／金屬藥盤</option><option value="background">單色背景／白色藥錠</option></select></label>
       <label>背景差異 <input id="pillThreshold" type="range" min="20" max="160" value="58"><output id="pillThresholdValue">58</output></label>
       <label>最小面積 <input id="pillMinArea" type="range" min="25" max="2000" step="25" value="150"><output id="pillMinAreaValue">150</output></label>
     </div>
-    <p class="hint">AI 模式會自動判斷完整藥錠或膠囊，雙色不分開計數；橘色點是信心較低的候選，請優先核對。首次需連網下載約 39 MB 模型，照片不會上傳。AI 模式可直接點標記刪除、點空白補一顆；樣本校準、背景差異與最小面積僅適用於舊版模式。自動結果不準時，可調整模式、背景差異及最小面積，或按「圈選一顆校準」，依序點一顆完整藥錠的左上角、右下角。校準後仍可點標記刪除、點空白補上一顆。金屬盤上的白色藥錠可選「白色藥錠／金屬藥盤」。重疊的藥粒仍需手動核對。</p>
+    <p class="hint">AI 模式會自動判斷完整藥錠或膠囊，雙色不分開計數；橘色點是信心較低的候選，請優先核對。標準模型約 39 MB；快速模型約 5 MB，但較容易漏判或重複，需人工核對。支援快取時模型會留在瀏覽器供下次使用，照片不會上傳。AI 模式可直接點標記刪除、點空白補一顆；樣本校準、背景差異與最小面積僅適用於舊版模式。自動結果不準時，可調整模式、背景差異及最小面積，或按「圈選一顆校準」，依序點一顆完整藥錠的左上角、右下角。校準後仍可點標記刪除、點空白補上一顆。金屬盤上的白色藥錠可選「白色藥錠／金屬藥盤」。重疊的藥粒仍需手動核對。</p>
     <p id="pillMessage" role="status" aria-live="polite">尚未選擇藥錠照片。</p>
     <canvas class="pill-preview" id="pillPreview" hidden aria-label="藥錠照片與計數標記"></canvas>
     <p class="pill-count" id="pillCount">— 顆</p>
@@ -81,7 +81,7 @@
   </section>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
-<script src="pill-detector.js?v=r15"></script>
+<script src="pill-detector.js?v=r17"></script>
 <script>
 (() => {
   'use strict';
@@ -462,17 +462,17 @@
   let pillAnalysisId=0,pillAnalyzing=false;
   async function analyzePills(){
     if(!pillSource)return;sampleMode=false;sampleCorner=null;$('pillCancelSample').hidden=true;pillCalibration='自動候選，待人工核對';const {width,height}=pillSource,ctx=pillSource.getContext('2d',{willReadFrequently:true});
-    const analysisId=++pillAnalysisId,source=pillSource;
-    if($('pillMode').value==='ai'){
+    const analysisId=++pillAnalysisId,source=pillSource,fast=$('pillMode').value==='ai-fast';
+    if(['ai','ai-fast'].includes($('pillMode').value)){
       pillAnalyzing=true;pillMarkers=[];pillHistory=[];drawPills();
       $('pillCount').textContent='辨識中…';$('pillCsv').disabled=true;$('pillCalibrate').disabled=true;$('pillReset').disabled=true;
-      pillStatus('正在載入 AI 並辨識完整藥錠／膠囊…首次需下載約 39 MB 模型，照片留在手機處理。');
+      pillStatus('正在辨識…首次使用此模式需載入'+(fast?'約 5 MB 快速模型':'約 39 MB 標準模型')+'，支援快取時後續可重用。照片留在手機處理。');
       try{
-        const markers=await PillObjectDetector.detect(source);
+        const markers=await PillObjectDetector.detect(source,{fast:$('pillMode').value==='ai-fast'});
         if(analysisId!==pillAnalysisId)return;
-        pillMarkers=markers;pillCalibration='AI 整顆辨識候選，待人工核對';pillHistory=[];drawPills();
+        pillMarkers=markers;pillCalibration=fast?'快速 AI 候選，較易漏判，待人工核對':'AI 整顆辨識候選，待人工核對';pillHistory=[];drawPills();
         const unsure=markers.filter(p=>p.uncertain).length;
-        pillStatus('找到 '+markers.length+' 個候選；'+(unsure?'其中 '+unsure+' 個橘色點信心較低，可能漏判、重複或誤判。':'')+'每個圓點代表一個候選物件，請逐顆核對，尤其是相接或重疊處。');
+        pillStatus((fast?'快速模式較易漏判；需要時請改用標準模式複核。':'')+'找到 '+markers.length+' 個候選；'+(unsure?'其中 '+unsure+' 個橘色點信心較低，可能漏判、重複或誤判。':'')+'每個圓點代表一個候選物件，請逐顆核對，尤其是相接或重疊處。');
       }catch(err){
         if(analysisId!==pillAnalysisId)return;
         pillMarkers=[];drawPills();$('pillCount').textContent='— 顆';$('pillCsv').disabled=true;
@@ -504,7 +504,7 @@
     $(slider).addEventListener('change',analyzePills);
   }
   function updatePillModeUI(){
-    const ai=$('pillMode').value==='ai';
+    const ai=['ai','ai-fast'].includes($('pillMode').value);
     $('pillCalibrate').hidden=ai;
     for(const id of ['pillThreshold','pillMinArea'])$(id).closest('label').hidden=ai;
   }
