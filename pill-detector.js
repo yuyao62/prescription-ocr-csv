@@ -2,10 +2,24 @@
  * Model source and licensing: see PILL_MODEL.md. */
 (() => {
   'use strict';
-  const MODEL = 'https://huggingface.co/piky/yolo11/resolve/9ec04d28c48d342906ccaee863a08a6a6394dbc1/yolo11m.onnx';
+  const MODEL_ROOT = 'https://huggingface.co/piky/yolo11/resolve/9ec04d28c48d342906ccaee863a08a6a6394dbc1/';
   const RUNTIME = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
-  let sessionPromise;
-  async function session() {
+  let sessionPromise,sessionKey;
+  async function modelBytes(fast){
+    const url=MODEL_ROOT+(fast?'yolo11n.onnx':'yolo11m.onnx'),expected=fast?5356820:40287669;
+    let cache;
+    try{cache=await caches.open('wy-pill-models-v1');const hit=await cache.match(url);if(hit){const bytes=await hit.arrayBuffer();if(bytes.byteLength===expected)return new Uint8Array(bytes);await cache.delete(url);}}catch{/* Private browsing or quota restrictions must not block inference. */}
+    const response=await fetch(url);if(!response.ok)throw Error('模型下載失敗，請檢查網路後重試。');
+    const bytes=await response.arrayBuffer();if(bytes.byteLength!==expected)throw Error('模型下載不完整，請重試。');
+    if(cache)cache.put(url,new Response(bytes,{headers:{'Content-Type':'application/octet-stream'}})).catch(()=>{});
+    return new Uint8Array(bytes);
+  }
+  async function session(fast=false) {
+    const key=fast?'fast':'accurate';
+    // All calls are serialized. Release the other model before switching to
+    // avoid holding both models' WASM allocations on a phone.
+    if(sessionPromise&&sessionKey!==key){const old=await sessionPromise;sessionPromise=null;await old.release();}
+    sessionKey=key;
     if (!sessionPromise) sessionPromise = (async () => {
       if (!window.ort) await new Promise((resolve,reject) => {
         const script=document.createElement('script');script.src=RUNTIME+'ort.wasm.min.js';
@@ -14,7 +28,8 @@
       });
       ort.env.wasm.wasmPaths=RUNTIME;
       ort.env.wasm.numThreads=1;
-      return ort.InferenceSession.create(MODEL,{executionProviders:['wasm'],graphOptimizationLevel:'all'});
+      const bytes=await modelBytes(fast);
+      return ort.InferenceSession.create(bytes,{executionProviders:['wasm'],graphOptimizationLevel:'all'});
     })().catch(error=>{sessionPromise=null;throw error;});
     return sessionPromise;
   }
@@ -31,8 +46,8 @@
     }
     return selected;
   }
-  async function detect(source) {
-    const net=await session(),side=640,scale=Math.min(side/source.width,side/source.height);
+  async function detect(source,fast=false) {
+    const net=await session(fast),side=640,scale=Math.min(side/source.width,side/source.height);
     const w=Math.round(source.width*scale),h=Math.round(source.height*scale);
     const left=Math.floor((side-w)/2),top=Math.floor((side-h)/2);
     const canvas=document.createElement('canvas');canvas.width=canvas.height=side;
@@ -64,6 +79,18 @@
   }
   // A stale photo's result is discarded by the UI; serialize inference so
   // repeated photo/mode changes never run the same WASM session concurrently.
-  let pending=Promise.resolve();
-  window.PillObjectDetector={detect(source){const run=pending.then(()=>detect(source));pending=run.catch(()=>{});return run;}};
+  let pending=Promise.resolve(),latest=0,lastSource,lastFast,lastPoints;
+  window.PillObjectDetector={detect(source,{fast=false}={}){
+    const request=++latest;
+    const run=pending.then(async()=>{
+      if(request!==latest)return [];
+      // The input canvas is immutable; return copies so manual edits cannot
+      // alter the cached automatic results used by the reset button.
+      if(source===lastSource&&fast===lastFast&&lastPoints)return lastPoints.map(p=>({...p}));
+      const points=await detect(source,fast);
+      lastSource=source;lastFast=fast;lastPoints=points;
+      return points.map(p=>({...p}));
+    });
+    pending=run.catch(()=>{});return run;
+  }};
 })();
