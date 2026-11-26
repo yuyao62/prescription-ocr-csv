@@ -65,7 +65,7 @@
         let cls=0,score=data[4*n+i];
         for(let c=1;c<4;c++)if(data[(4+c)*n+i]>score){score=data[(4+c)*n+i];cls=c;}
         // Model labels: capsule, damaged-pill, foreign-matter, tablet.
-        if((cls!==0 && cls!==3)||score<.25)continue;
+        if((cls!==0 && cls!==3)||score<.12)continue;
         const x=data[i],y=data[n+i],bw=data[2*n+i],bh=data[3*n+i];
         const x0=Math.max(0,(x-bw/2-left)/scale),y0=Math.max(0,(y-bh/2-top)/scale);
         const x1=Math.min(source.width,(x+bw/2-left)/scale),y1=Math.min(source.height,(y+bh/2-top)/scale);
@@ -80,16 +80,22 @@
   // A stale photo's result is discarded by the UI; serialize inference so
   // repeated photo/mode changes never run the same WASM session concurrently.
   let pending=Promise.resolve(),latest=0,lastSource,lastFast,lastPoints;
-  window.PillObjectDetector={detect(source,{fast=false}={}){
+  window.PillObjectDetector={detect(source,{fast=false,confidence=.25}={}){
+    const threshold=Number.isFinite(confidence)?Math.max(.12,Math.min(.8,confidence)):.25;
+    const select=points=>{
+      const accepted=points.filter(p=>p.score>=threshold).map(p=>({...p}));
+      const areas=accepted.map(p=>p.area).sort((a,b)=>a-b),typical=areas[Math.floor(areas.length/2)];
+      return accepted.map(p=>({...p,uncertain:p.uncertain || (typical && p.area<typical*.3)}));
+    };
     const request=++latest;
     const run=pending.then(async()=>{
       if(request!==latest)return [];
       // The input canvas is immutable; return copies so manual edits cannot
       // alter the cached automatic results used by the reset button.
-      if(source===lastSource&&fast===lastFast&&lastPoints)return lastPoints.map(p=>({...p}));
+      if(source===lastSource&&fast===lastFast&&lastPoints)return select(lastPoints);
       const points=await detect(source,fast);
       lastSource=source;lastFast=fast;lastPoints=points;
-      return points.map(p=>({...p}));
+      return select(points);
     });
     pending=run.catch(()=>{});return run;
   }};
